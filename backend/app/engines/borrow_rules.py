@@ -1,10 +1,17 @@
-"""One active loan per item + overdue detection."""
+"""One active loan per item + overdue detection; listing requires title and owner."""
 
 def can_lend(item_status: str, active_loans: int) -> dict:
     if item_status != "available":
         return {"ok": False, "reason": "item_not_available"}
     if active_loans > 0:
         return {"ok": False, "reason": "already_on_loan"}
+    return {"ok": True, "reason": ""}
+
+def can_list(title: str, owner: str) -> dict:
+    if not (title or "").strip():
+        return {"ok": False, "reason": "title_required"}
+    if not (owner or "").strip():
+        return {"ok": False, "reason": "owner_required"}
     return {"ok": True, "reason": ""}
 
 def is_overdue(due_date: str, today: str, loan_status: str) -> bool:

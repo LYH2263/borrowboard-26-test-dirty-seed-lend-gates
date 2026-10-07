@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from app import seed
 from app.db import connect
-from app.engines.borrow_rules import can_lend, classify_loans
+from app.engines.borrow_rules import can_lend, can_list, classify_loans
 
 app = FastAPI(title="Borrowboard", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -41,6 +41,9 @@ class ItemIn(BaseModel):
 
 @app.post("/api/items")
 def add_item(body: ItemIn):
+    check = can_list(body.title, body.owner)
+    if not check["ok"]:
+        raise HTTPException(422, check["reason"])
     c = connect()
     cur = c.execute("INSERT INTO items(title,owner,status,data_quality) VALUES (?,?,?,?)",
                     (body.title, body.owner, "available", "clean"))
