@@ -1,10 +1,10 @@
 from datetime import date, datetime, timezone
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from app import seed
 from app.db import connect
-from app.engines.borrow_rules import can_lend, classify_loans
+from app.engines.borrow_rules import can_lend, classify_loans, shows_as_available
 
 app = FastAPI(title="Borrowboard", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -17,12 +17,18 @@ def health(): return {"ok": True, "project": "borrowboard"}
 
 @app.get("/api/items")
 def items():
-    c = connect(); rows = [dict(r) for r in c.execute("SELECT * FROM items")]; c.close(); return rows
+    c = connect()
+    rows = [dict(r) for r in c.execute("SELECT * FROM items")]
+    c.close()
+    # 物主栏与可借资格链同源：status=available 却被资格链拒绝的物品隔离，
+    # 不在物主栏产生幽灵行；有在借等历史的物品仍如实展示。
+    return [i for i in rows if shows_as_available(i) or i["status"] != "available"]
 
 @app.get("/api/board")
 def board():
     c = connect()
-    available = [dict(r) for r in c.execute("SELECT * FROM items WHERE status='available'")]
+    all_items = [dict(r) for r in c.execute("SELECT * FROM items")]
+    available = [i for i in all_items if shows_as_available(i)]
     loans = [dict(r) for r in c.execute(
         """SELECT loans.*, items.title FROM loans JOIN items ON items.id=loans.item_id
            WHERE loans.status='active'""")]
@@ -38,6 +44,13 @@ def board():
 class ItemIn(BaseModel):
     title: str
     owner: str
+
+    @field_validator("title", "owner")
+    @classmethod
+    def _nonblank(cls, v):
+        if not v or not v.strip():
+            raise ValueError("must_not_be_empty")
+        return v
 
 @app.post("/api/items")
 def add_item(body: ItemIn):
@@ -56,12 +69,13 @@ def lend(iid: int, body: LendIn):
     item = c.execute("SELECT * FROM items WHERE id=?", (iid,)).fetchone()
     if not item: c.close(); raise HTTPException(404, "item")
     active = c.execute("SELECT COUNT(*) c FROM loans WHERE item_id=? AND status='active'", (iid,)).fetchone()["c"]
-    check = can_lend(item["status"], active)
+    check = can_lend(dict(item), active)
     if not check["ok"]:
         c.close(); raise HTTPException(409, check["reason"])
     cur = c.execute(
         "INSERT INTO loans(item_id,borrower,status,due_date,lent_at) VALUES (?,?,?,?,?)",
         (iid, body.borrower, "active", body.due_date, datetime.now(timezone.utc).isoformat()))
+    # 只翻转 status；owner/data_quality 原样保留，借出确认不得洗白脏数据。
     c.execute("UPDATE items SET status='on_loan' WHERE id=?", (iid,))
     c.commit(); lid = cur.lastrowid; c.close(); return {"loan_id": lid}
 
